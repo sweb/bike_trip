@@ -1,0 +1,180 @@
+---
+title: 'Leada''s data literate problem #1: Bike rentals'
+date: "January, 2015"
+output: html_document
+---
+
+A few days ago I found the [data year newsletter](https://www.teamleada.com/data-year) by [Leada](www.teamleada.com) where they offer a data analysis related problem every two weeks. The following post is my solution to this first exercise.
+
+###Problem description by Leada
+
+---
+
+> Dataset Description: A CSV of bicycle rental transactions from the Bay Area Bike Share Data Challenge.
+>
+> Problem 1: What was the average total time (in minutes) used by a bicycle in the data?
+>
+> Problem 2: What was the most popular day by trip frequency in this dataset?
+>
+> Problem 3 (harder): Assuming there are 30 bikes per station, find what date and time the bikes FIRST need to be rebalanced. As in, there are 0 bikes at a terminal for a customer to rent. 
+>
+> Problem 3 (easier): Assuming there are 30 bikes per station, find what date the bikes FIRST need to be rebalanced. As in, there are 0 bikes at a terminal for a customer to rent. Do this ignoring "Start.Date" and "End.Date" columns.
+
+---
+
+```{r include=FALSE}
+require(dplyr)
+require(lubridate)
+require(ggplot2)
+
+setwd("C:/Users/florian.mueller/Dropbox/data_analysis/bike_trip")
+```
+
+I started by downloading the file and opening it with R. I use the libraries dplyr, lubridate and ggplot2. Then I looked at the imported data set.
+
+```{r}
+raw.trip_data <- read.csv("bike_trip_data.csv", header=TRUE, sep=",")
+summary(raw.trip_data)
+```
+
+The summary of the raw data offers some initial insights. First of all, duration seems to be a good starting point to answer the first question. Start.Date and End.Date seem to be dates of format m/d/y hh:mm, but are not yet a in proper date format. Start.Terminal and End.Terminal should be factors, but they were parsed as numeric. It may be necessary to modify this.
+
+```{r}
+ana.trip_data <- mutate(raw.trip_data, 
+                          Start.Date = mdy_hm(Start.Date), 
+                          End.Date = mdy_hm(End.Date))
+```
+
+In a first preparation step before conducting the first analysis, I transform the start and end date into lubridate date formats to ease the pain of working with date formats.
+
+###Problem 1
+
+The problem description asks for the average duration in minutes. The duration is already given to us as an own feature and the summary-call already reveals it's mean. However, in order to check the unit of the column, I compare some data rows with the start and end date:
+
+```{r}
+head(ana.trip_data %>% select(Duration, Start.Date, End.Date))
+```
+Looking at the values strongly suggests that the duration feature is noted in seconds. Now, I can group by Bike-ID in order to calculate the sum of the duration per bike and afterwards average the total duration. As a last step I divide the resulting value by 60:
+
+```{r}
+ana.trip_data %>% 
+  group_by(Bike..) %>% 
+  summarize(total = sum(Duration)) %>% 
+  ungroup() %>% 
+  summarize(mean(total)) / 60
+```
+
+Thus, the average total duration of a trip is 4288.087 minutes.
+
+###Problem 2
+
+The problem description asks for the most frequented day in the data set. To this end, I group the data set by the day the individual trip started and count the trips of that day. Afterwards I sort them in descending order by that count and select the topmost day:
+
+```{r}
+head(ana.trip_data %>% mutate(curr_day = floor_date(Start.Date, "day")) %>%
+       group_by(curr_day) %>% summarize(frequency = n()) %>% arrange(desc(frequency)),1)
+```
+
+Since it could also be possible to measure frequency during a day by returning bikes I do the same with the end date.
+
+```{r}
+head(ana.trip_data %>% mutate(curr_day = floor_date(End.Date, "day")) %>%
+  group_by(curr_day) %>% summarize(frequency = n()) %>% arrange(desc(frequency)),1)
+```
+
+However, since I get the same day with this second query the result for exercise 2 is the 25th of September 2013.
+
+###Problem 3
+
+I will only try to solve the harder version, since I do not really understand the easier variant - how should I get a date if I ignore the only available date features?
+
+The problem description asks for the point in time when one terminal has zero bikes left, starting with a set of 30 bikes. In order to solve the exercise, I am going to consider bike rides as events with a time stamp and a location. Each data row has two events, since the start date and the end date are listed in one row.
+
+Thus, in a first step I am going to create a list of events, consisting of start events and end events. Each event gets a cost-feature - plus 1 for arrivals(end date) and minus 1 for departures (start date).Since the arrival and departure events are grouped, the combined event-data frames need to be sorted by date: 
+
+```{r}
+ana.transactions <- rbind(ana.trip_data %>%
+        mutate(Event.Date = Start.Date, Event.Terminal = Start.Terminal, Count = -1) %>% 
+        select(Event.Date, Event.Terminal, Count), 
+        ana.trip_data %>% 
+        mutate(Event.Date = End.Date, Event.Terminal = End.Terminal, Count = 1) %>% 
+        select(Event.Date, Event.Terminal, Count)) %>% 
+  arrange(Event.Date)
+```
+
+Now, the bikes per terminal get initialized:
+
+```{r}
+ana.terminals <- 
+  data.frame(cbind(Terminal = unique(ana.transactions[,"Event.Terminal"]), 
+                   Count = 30))
+```
+
+Now, I run through my list of events and update the bike count of the current terminal. At some point, the currently selected terminal may reach zero (the exercise suggests that it will ^^) and in that case the current event is printed. Afterwards the loop is stopped since loops are really slow and we do not need further re balancing notifications.
+
+```{r}
+for (i in 1:nrow(ana.transactions)) {
+  tmp_trans <- ana.transactions[i,]
+  tmp_terminal_count <- ana.terminals %>% 
+    filter(Terminal == tmp_trans[["Event.Terminal"]])
+  tmp_terminal_count$Count <- tmp_terminal_count$Count + tmp_trans["Count"]
+  
+  isIdOfCurrentTerminal <- ana.terminals$Terminal == tmp_trans[["Event.Terminal"]]
+  ana.terminals$Count[isIdOfCurrentTerminal] <- tmp_terminal_count$Count
+  
+  if (tmp_terminal_count$Count == 0) {
+    print("Zero reached!")
+    print(tmp_trans)
+    break
+  }
+}
+```
+
+The "winning" terminal is Terminal 54 on the second of September 2013 at 11:33 a.m. In order to plot the bike count of terminal 54 until this point I modify the for loop slightly. A second data frame, collecting the relevant events with updated bike count is initialized and later on filled during the loop:
+
+```{r}
+ana.terminals <- 
+  data.frame(cbind(Terminal = unique(ana.transactions[,"Event.Terminal"]), 
+                   Count = 30))
+ana.collectedEvents <- 
+  data.frame(Event.Date = floor_date(ana.transactions[1,"Event.Date"], "day"), 
+             Count = 30)
+
+for (i in 1:nrow(ana.transactions)) {
+  tmp_trans <- ana.transactions[i,]
+  tmp_terminal_count <- ana.terminals %>% 
+    filter(Terminal == tmp_trans[["Event.Terminal"]])
+  tmp_terminal_count$Count <- tmp_terminal_count$Count + tmp_trans["Count"]
+  
+  isIdOfCurrentTerminal <- ana.terminals$Terminal == tmp_trans[["Event.Terminal"]]
+  ana.terminals$Count[isIdOfCurrentTerminal] <- tmp_terminal_count$Count
+  
+  if (tmp_trans$Event.Terminal == 54) {
+    tmp_df <- 
+      data.frame(Event.Date = tmp_trans$Event.Date, 
+                 Count =tmp_terminal_count$Count)
+    
+    ana.collectedEvents <- rbind(ana.collectedEvents, tmp_df)
+  }
+  
+  
+  if (tmp_terminal_count$Count == 0) {
+    print("Zero reached!")
+    print(tmp_trans)
+    break
+  }
+}
+```
+
+Resulting in this graph:
+
+```{r, echo=FALSE}
+ggplot(ana.collectedEvents, aes(x=Event.Date, y=Count)) +
+  geom_point(shape=3) +
+  ggtitle("Number of bikes at terminal 54 over time") +
+  ylab("Number of bikes at terminal 54") +
+  xlab("Time")
+```
+
+###Conclusion
+The for-loop is effective but not very efficient. It could be interesting to see, if a compiled language like Go achieves notable better performance for the same construct. However, a solution not depending on a for loop would be great - but currently I do not know a viable alternative.
